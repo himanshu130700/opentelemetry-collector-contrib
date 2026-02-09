@@ -264,6 +264,7 @@ func TestQueueConfigDefaults(t *testing.T) {
 	queueCfg := actualCfg.QueueConfig.Get()
 	assert.Equal(t, 10, queueCfg.NumConsumers, "NumConsumers should default to 10")
 	assert.Equal(t, int64(1000), queueCfg.QueueSize, "QueueSize should default to 1000")
+	assert.True(t, queueCfg.Batch.HasValue(), "Batch should be configured")
 
 	// Verify config is valid (no crash)
 	require.NoError(t, actualCfg.Validate())
