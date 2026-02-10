@@ -16,6 +16,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/signaltometricsconnector/internal/customottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/signaltometricsconnector/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/signaltometricsconnector/internal/model"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottldatapoint"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottllog"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlprofile"
@@ -35,7 +36,9 @@ func NewFactory() connector.Factory {
 }
 
 func createDefaultConfig() component.Config {
-	return &config.Config{}
+	return &config.Config{
+		ErrorMode: ottl.PropagateError,
+	}
 }
 
 func createTracesToMetrics(
@@ -67,6 +70,7 @@ func createTracesToMetrics(
 		),
 		next:           nextConsumer,
 		spanMetricDefs: metricDefs,
+		errorMode:      c.ErrorMode,
 	}, nil
 }
 
@@ -99,6 +103,7 @@ func createMetricsToMetrics(
 		),
 		next:         nextConsumer,
 		dpMetricDefs: metricDefs,
+		errorMode:    c.ErrorMode,
 	}, nil
 }
 
@@ -131,6 +136,7 @@ func createLogsToMetrics(
 		),
 		next:          nextConsumer,
 		logMetricDefs: metricDefs,
+		errorMode:     c.ErrorMode,
 	}, nil
 }
 
@@ -163,5 +169,6 @@ func createProfilesToMetrics(
 		),
 		next:              nextConsumer,
 		profileMetricDefs: metricDefs,
+		errorMode:         c.ErrorMode,
 	}, nil
 }
