@@ -371,11 +371,11 @@ func assertAggregatedMetrics(t *testing.T, expected, actual pmetric.Metrics) {
 // TestErrorMode tests error handling behavior with different error modes
 func TestErrorMode(t *testing.T) {
 	tests := []struct {
-		name           string
-		errorMode      ottl.ErrorMode
-		expectError    bool
-		expectLogs     bool
-		expectMetrics  bool
+		name          string
+		errorMode     ottl.ErrorMode
+		expectError   bool
+		expectLogs    bool
+		expectMetrics bool
 	}{
 		{
 			name:          "propagate error",
@@ -403,7 +403,7 @@ func TestErrorMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Run("traces", func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				factory := NewFactory()
 
 				// Setup logger observer to capture logs
@@ -444,20 +444,20 @@ func TestErrorMode(t *testing.T) {
 				}
 
 				if tt.expectLogs {
-					assert.Greater(t, observedLogs.Len(), 0, "expected error to be logged")
+					assert.Positive(t, observedLogs.Len(), "expected error to be logged")
 				} else {
-					assert.Equal(t, 0, observedLogs.Len(), "expected no logs")
+					assert.Empty(t, observedLogs.All(), "expected no logs")
 				}
 
 				if tt.expectMetrics {
-					assert.Equal(t, 1, len(next.AllMetrics()), "expected metrics to be generated")
+					assert.Len(t, next.AllMetrics(), 1, "expected metrics to be generated")
 				} else {
-					assert.Equal(t, 0, len(next.AllMetrics()), "expected no metrics")
+					assert.Empty(t, next.AllMetrics(), "expected no metrics")
 				}
 			})
 
 			t.Run("logs", func(t *testing.T) {
-				ctx := context.Background()
+				ctx := t.Context()
 				factory := NewFactory()
 
 				observedZapCore, observedLogs := observer.New(zap.InfoLevel)
@@ -495,15 +495,15 @@ func TestErrorMode(t *testing.T) {
 				}
 
 				if tt.expectLogs {
-					assert.Greater(t, observedLogs.Len(), 0)
+					assert.Positive(t, observedLogs.Len())
 				} else {
-					assert.Equal(t, 0, observedLogs.Len())
+					assert.Empty(t, observedLogs.All())
 				}
 
 				if tt.expectMetrics {
-					assert.Equal(t, 1, len(next.AllMetrics()))
+					assert.Len(t, next.AllMetrics(), 1)
 				} else {
-					assert.Equal(t, 0, len(next.AllMetrics()))
+					assert.Empty(t, next.AllMetrics())
 				}
 			})
 		})
