@@ -2096,7 +2096,6 @@ func TestSupervisorRemoteConfigApplyStatus(t *testing.T) {
 
 				return n != 0
 			}, 10*time.Second, 100*time.Millisecond, "Log never appeared in output")
-
 		})
 	}
 }
