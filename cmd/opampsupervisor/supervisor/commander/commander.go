@@ -110,6 +110,30 @@ func (c *Commander) ReloadConfigFile() error {
 	return nil
 }
 
+// ValidateConfig runs the collector's validate command on the specified configuration file
+// to check if the configuration is valid without starting the collector.
+// Returns an error if the configuration is invalid or if the validation process fails.
+func (c *Commander) ValidateConfig(ctx context.Context, configPath string) error {
+	c.logger.Debug("Validating agent config", zap.String("config", configPath))
+
+	args := []string{"validate", "--config", configPath}
+	args = append(args, c.cfg.Arguments...)
+
+	cmd := exec.CommandContext(ctx, c.cfg.Executable, args...) // #nosec G204
+	cmd.Env = envVarMapToEnvMapSlice(c.cfg.Env)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		c.logger.Error("Config validation failed",
+			zap.String("output", string(output)),
+			zap.Error(err))
+		return fmt.Errorf("config validation failed: %w, output: %s", err, string(output))
+	}
+
+	c.logger.Debug("Config validation succeeded")
+	return nil
+}
+
 func (c *Commander) startNormal() error {
 	logFilePath := filepath.Join(c.logsDir, "agent.log")
 	stdoutFile, err := os.Create(logFilePath)

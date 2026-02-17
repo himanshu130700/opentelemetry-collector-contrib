@@ -1460,6 +1460,15 @@ func (s *Supervisor) composeMergedConfig(incomingConfig *protobufs.AgentRemoteCo
 	oldConfigState := s.cfgState.Swap(newConfigState)
 	if oldConfigState == nil || !oldConfigState.(*configState).equal(newConfigState) {
 		s.telemetrySettings.Logger.Debug("Merged config changed.")
+		
+		// Validate the new configuration before accepting it
+		if err := s.validateAgentConfig(); err != nil {
+			// Restore the old configuration if validation fails
+			s.cfgState.Store(oldConfigState)
+			s.telemetrySettings.Logger.Error("New configuration failed validation, reverting to previous config", zap.Error(err))
+			return false, fmt.Errorf("configuration validation failed: %w", err)
+		}
+		
 		configChanged = true
 	}
 
@@ -1740,6 +1749,40 @@ func (s *Supervisor) writeAgentConfig() error {
 	if err := os.WriteFile(s.agentConfigFilePath(), []byte(cfgState.mergedConfig), 0o600); err != nil {
 		return err
 	}
+	return nil
+}
+
+// validateAgentConfig writes the configuration to a temporary file and validates it
+// using the collector's validate command before applying it.
+// Returns an error if validation fails.
+func (s *Supervisor) validateAgentConfig() error {
+	cfgState := s.cfgState.Load().(*configState)
+	
+	// Write config to a temporary file for validation
+	tempFile, err := os.CreateTemp(s.config.Storage.Directory, "validate-config-*.yaml")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file for validation: %w", err)
+	}
+	defer os.Remove(tempFile.Name()) // Clean up temp file
+	defer tempFile.Close()
+
+	if _, err := tempFile.Write([]byte(cfgState.mergedConfig)); err != nil {
+		return fmt.Errorf("failed to write temp config file for validation: %w", err)
+	}
+	
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp config file: %w", err)
+	}
+
+	// Validate the configuration using the collector's validate command
+	ctx, cancel := context.WithTimeout(s.runCtx, 10*time.Second)
+	defer cancel()
+	
+	if err := s.commander.ValidateConfig(ctx, tempFile.Name()); err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	s.telemetrySettings.Logger.Debug("Configuration validation succeeded")
 	return nil
 }
 
