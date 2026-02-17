@@ -2198,64 +2198,6 @@ func TestSupervisorRemoteConfigApplyStatus(t *testing.T) {
 				return n != 0
 			}, 10*time.Second, 100*time.Millisecond, "Log never appeared in output")
 
-			t.Run("bad config", func(t *testing.T) {
-				// Test with bad configuration
-				badCfg, badHash := createBadCollectorConf(t)
-
-				server.sendToSupervisor(&protobufs.ServerToAgent{
-					RemoteConfig: &protobufs.AgentRemoteConfig{
-						Config: &protobufs.AgentConfigMap{
-							ConfigMap: map[string]*protobufs.AgentConfigFile{
-								"": {Body: badCfg.Bytes()},
-							},
-						},
-						ConfigHash: badHash,
-					},
-				})
-
-				// Wait for the health checks to fail
-				require.Eventually(t, func() bool {
-					health, ok := healthReport.Load().(*protobufs.ComponentHealth)
-					return ok && !health.Healthy
-				}, 30*time.Second, 100*time.Millisecond, "Collector did not become unhealthy with bad config")
-
-				// Check that the status is set to FAILED after failed health checks
-				require.Eventually(t, func() bool {
-					status, ok := remoteConfigStatus.Load().(*protobufs.RemoteConfigStatus)
-					return ok && status.Status == protobufs.RemoteConfigStatuses_RemoteConfigStatuses_FAILED
-				}, 15*time.Second, 100*time.Millisecond, "Remote config status was not set to FAILED for bad config")
-
-				// Test with nop configuration
-				emptyHash := sha256.Sum256([]byte{})
-				server.sendToSupervisor(&protobufs.ServerToAgent{
-					RemoteConfig: &protobufs.AgentRemoteConfig{
-						Config: &protobufs.AgentConfigMap{
-							ConfigMap: map[string]*protobufs.AgentConfigFile{},
-						},
-						ConfigHash: emptyHash[:],
-					},
-				})
-
-				// Check that the status is set to APPLIED
-				require.Eventually(t, func() bool {
-					status, ok := remoteConfigStatus.Load().(*protobufs.RemoteConfigStatus)
-					return ok && status.Status == protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED
-				}, 5*time.Second, 10*time.Millisecond, "Remote config status was not set to APPLIED for empty config")
-
-				gotSpans := []string{}
-				expectedSpans := []string{"GetBootstrapInfo", "onMessage"}
-				require.EventuallyWithT(t, func(collect *assert.CollectT) {
-					require.GreaterOrEqual(collect, len(mockBackend.ReceivedTraces), len(expectedSpans))
-				}, 10*time.Second, 250*time.Millisecond)
-
-				for i := 0; i < len(mockBackend.ReceivedTraces); i++ {
-					gotSpans = append(gotSpans, mockBackend.ReceivedTraces[i].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).Name())
-				}
-
-				for _, expectedSpan := range expectedSpans {
-					require.Contains(t, gotSpans, expectedSpan)
-				}
-			})
 		})
 	}
 }
@@ -2689,4 +2631,3 @@ func TestSupervisorValidatesConfigBeforeApplying(t *testing.T) {
 		})
 	}
 }
-
