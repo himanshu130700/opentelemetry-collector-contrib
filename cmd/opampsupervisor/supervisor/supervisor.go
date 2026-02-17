@@ -1461,12 +1461,15 @@ func (s *Supervisor) composeMergedConfig(incomingConfig *protobufs.AgentRemoteCo
 	if oldConfigState == nil || !oldConfigState.(*configState).equal(newConfigState) {
 		s.telemetrySettings.Logger.Debug("Merged config changed.")
 
-		// Validate the new configuration before accepting it
-		if err := s.validateAgentConfig(); err != nil {
-			// Restore the old configuration if validation fails
-			s.cfgState.Store(oldConfigState)
-			s.telemetrySettings.Logger.Error("New configuration failed validation, reverting to previous config", zap.Error(err))
-			return false, fmt.Errorf("configuration validation failed: %w", err)
+		// Skip validation if the config map is empty (means stop the collector)
+		if !newConfigState.configMapIsEmpty {
+			// Validate the new configuration before accepting it
+			if err := s.validateAgentConfig(); err != nil {
+				// Restore the old configuration if validation fails
+				s.cfgState.Store(oldConfigState)
+				s.telemetrySettings.Logger.Error("New configuration failed validation, reverting to previous config", zap.Error(err))
+				return false, fmt.Errorf("configuration validation failed: %w", err)
+			}
 		}
 
 		configChanged = true
