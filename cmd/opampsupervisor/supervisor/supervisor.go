@@ -1449,7 +1449,6 @@ func (s *Supervisor) composeMergedConfig(incomingConfig *protobufs.AgentRemoteCo
 	}
 
 	// Check if supervisor's merged config is changed.
-
 	newConfigState := &configState{
 		mergedConfig:     string(newMergedConfigBytes),
 		configMapIsEmpty: (incomingConfig != nil && !hasIncomingConfigMap),
@@ -1457,21 +1456,29 @@ func (s *Supervisor) composeMergedConfig(incomingConfig *protobufs.AgentRemoteCo
 
 	configChanged = false
 
-	oldConfigState := s.cfgState.Swap(newConfigState)
-	if oldConfigState == nil || !oldConfigState.(*configState).equal(newConfigState) {
+	oldConfigStateInterface := s.cfgState.Load()
+	var oldConfigState *configState
+	if oldConfigStateInterface != nil {
+		oldConfigState = oldConfigStateInterface.(*configState)
+	}
+
+	if oldConfigState == nil || !oldConfigState.equal(newConfigState) {
 		s.telemetrySettings.Logger.Debug("Merged config changed.")
 
-		// Skip validation if the config map is empty (means stop the collector)
-		if !newConfigState.configMapIsEmpty {
-			// Validate the new configuration before accepting it
-			if err := s.validateAgentConfig(); err != nil {
-				// Restore the old configuration if validation fails
-				s.cfgState.Store(oldConfigState)
-				s.telemetrySettings.Logger.Error("New configuration failed validation, reverting to previous config", zap.Error(err))
+		// Validate BEFORE storing to prevent race condition where other goroutines read invalid config
+		if s.config.Agent.ValidateConfig && !newConfigState.configMapIsEmpty {
+			if err := s.validateConfig(newConfigState.mergedConfig); err != nil {
+				s.telemetrySettings.Logger.Warn(
+					"New configuration failed validation, keeping previous config. "+
+						"Note: Validation may fail for valid configs if resources (e.g., ports) are temporarily unavailable.",
+					zap.Error(err),
+				)
 				return false, fmt.Errorf("configuration validation failed: %w", err)
 			}
 		}
 
+		// Only store after successful validation (or if validation is disabled/skipped)
+		s.cfgState.Store(newConfigState)
 		configChanged = true
 	}
 
@@ -1755,35 +1762,31 @@ func (s *Supervisor) writeAgentConfig() error {
 	return nil
 }
 
-// validateAgentConfig writes the configuration to a temporary file and validates it
-// using the collector's validate command before applying it.
+// validateConfig validates a configuration string without storing it in cfgState.
+// This prevents race conditions where other goroutines might read invalid config during validation.
 // Returns an error if validation fails.
-func (s *Supervisor) validateAgentConfig() error {
+func (s *Supervisor) validateConfig(configContent string) error {
 	if s.commander == nil {
 		s.telemetrySettings.Logger.Debug("Skipping config validation: commander not initialized")
 		return nil
 	}
-
-	cfgState := s.cfgState.Load().(*configState)
 
 	// Write config to a temporary file for validation
 	tempFile, err := os.CreateTemp(s.config.Storage.Directory, "validate-config-*.yaml")
 	if err != nil {
 		return fmt.Errorf("failed to create temp config file for validation: %w", err)
 	}
-	defer os.Remove(tempFile.Name()) // Clean up temp file
+	defer os.Remove(tempFile.Name())
 
-	if _, err := tempFile.WriteString(cfgState.mergedConfig); err != nil {
+	if _, err := tempFile.WriteString(configContent); err != nil {
 		tempFile.Close()
 		return fmt.Errorf("failed to write temp config file for validation: %w", err)
 	}
 
-	// Close the file explicitly before validation to ensure write is flushed
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp config file: %w", err)
 	}
 
-	// Use background context if runCtx is not initialized (e.g., during tests)
 	parentCtx := s.runCtx
 	if parentCtx == nil {
 		parentCtx = context.Background()

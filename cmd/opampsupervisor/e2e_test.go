@@ -757,6 +757,107 @@ func TestSupervisorStartsWithNoOpAMPServer(t *testing.T) {
 	}, 10*time.Second, 500*time.Millisecond, "Log never appeared in output")
 }
 
+func TestSupervisorRestartsCollectorAfterBadConfig(t *testing.T) {
+	modes := getTestModes()
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			var healthReport atomic.Value
+			var agentConfig atomic.Value
+			server := newOpAMPServer(
+				t,
+				defaultConnectingHandler,
+				types.ConnectionCallbacks{
+					OnMessage: func(_ context.Context, _ types.Connection, message *protobufs.AgentToServer) *protobufs.ServerToAgent {
+						if message.Health != nil {
+							healthReport.Store(message.Health)
+						}
+						if message.EffectiveConfig != nil {
+							config := message.EffectiveConfig.ConfigMap.ConfigMap[""]
+							if config != nil {
+								agentConfig.Store(string(config.Body))
+							}
+						}
+
+						return &protobufs.ServerToAgent{}
+					},
+				})
+
+			extraConfigData := map[string]string{"url": server.addr}
+			if mode.UseHUPConfigReload {
+				extraConfigData["use_hup_config_reload"] = "true"
+			}
+
+			s, supervisorCfg := newSupervisor(t, "basic", extraConfigData)
+			if mode.UseHUPConfigReload {
+				require.True(t, supervisorCfg.Agent.UseHUPConfigReload)
+			}
+
+			require.Nil(t, s.Start(t.Context()))
+			defer s.Shutdown()
+
+			waitForSupervisorConnection(server.supervisorConnected, true)
+
+			cfg, hash := createBadCollectorConf(t)
+
+			server.sendToSupervisor(&protobufs.ServerToAgent{
+				RemoteConfig: &protobufs.AgentRemoteConfig{
+					Config: &protobufs.AgentConfigMap{
+						ConfigMap: map[string]*protobufs.AgentConfigFile{
+							"": {Body: cfg.Bytes()},
+						},
+					},
+					ConfigHash: hash,
+				},
+			})
+
+			require.Eventually(t, func() bool {
+				cfg, ok := agentConfig.Load().(string)
+				if ok {
+					// The effective config may be structurally different compared to what was sent,
+					// so just check that it includes some strings we know to be unique to the remote config.
+					return strings.Contains(cfg, "doesntexist")
+				}
+
+				return false
+			}, 5*time.Second, 500*time.Millisecond, "Collector was not started with remote config")
+
+			require.Eventually(t, func() bool {
+				health := healthReport.Load().(*protobufs.ComponentHealth)
+
+				if health != nil {
+					return !health.Healthy && health.LastError != ""
+				}
+
+				return false
+			}, 5*time.Second, 250*time.Millisecond, "Supervisor never reported that the Collector was unhealthy")
+
+			cfg, hash, _, _ = createSimplePipelineCollectorConf(t)
+
+			server.sendToSupervisor(&protobufs.ServerToAgent{
+				RemoteConfig: &protobufs.AgentRemoteConfig{
+					Config: &protobufs.AgentConfigMap{
+						ConfigMap: map[string]*protobufs.AgentConfigFile{
+							"": {Body: cfg.Bytes()},
+						},
+					},
+					ConfigHash: hash,
+				},
+			})
+
+			require.Eventually(t, func() bool {
+				health := healthReport.Load().(*protobufs.ComponentHealth)
+
+				if health != nil {
+					return health.Healthy && health.LastError == ""
+				}
+
+				return false
+			}, 5*time.Second, 250*time.Millisecond, "Supervisor never reported that the Collector became healthy")
+		})
+	}
+}
+
 func TestSupervisorConfiguresCapabilities(t *testing.T) {
 	var capabilities atomic.Uint64
 	server := newOpAMPServer(
@@ -2096,6 +2197,65 @@ func TestSupervisorRemoteConfigApplyStatus(t *testing.T) {
 
 				return n != 0
 			}, 10*time.Second, 100*time.Millisecond, "Log never appeared in output")
+
+			t.Run("bad config", func(t *testing.T) {
+				// Test with bad configuration
+				badCfg, badHash := createBadCollectorConf(t)
+
+				server.sendToSupervisor(&protobufs.ServerToAgent{
+					RemoteConfig: &protobufs.AgentRemoteConfig{
+						Config: &protobufs.AgentConfigMap{
+							ConfigMap: map[string]*protobufs.AgentConfigFile{
+								"": {Body: badCfg.Bytes()},
+							},
+						},
+						ConfigHash: badHash,
+					},
+				})
+
+				// Wait for the health checks to fail
+				require.Eventually(t, func() bool {
+					health, ok := healthReport.Load().(*protobufs.ComponentHealth)
+					return ok && !health.Healthy
+				}, 30*time.Second, 100*time.Millisecond, "Collector did not become unhealthy with bad config")
+
+				// Check that the status is set to FAILED after failed health checks
+				require.Eventually(t, func() bool {
+					status, ok := remoteConfigStatus.Load().(*protobufs.RemoteConfigStatus)
+					return ok && status.Status == protobufs.RemoteConfigStatuses_RemoteConfigStatuses_FAILED
+				}, 15*time.Second, 100*time.Millisecond, "Remote config status was not set to FAILED for bad config")
+
+				// Test with nop configuration
+				emptyHash := sha256.Sum256([]byte{})
+				server.sendToSupervisor(&protobufs.ServerToAgent{
+					RemoteConfig: &protobufs.AgentRemoteConfig{
+						Config: &protobufs.AgentConfigMap{
+							ConfigMap: map[string]*protobufs.AgentConfigFile{},
+						},
+						ConfigHash: emptyHash[:],
+					},
+				})
+
+				// Check that the status is set to APPLIED
+				require.Eventually(t, func() bool {
+					status, ok := remoteConfigStatus.Load().(*protobufs.RemoteConfigStatus)
+					return ok && status.Status == protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED
+				}, 5*time.Second, 10*time.Millisecond, "Remote config status was not set to APPLIED for empty config")
+
+				gotSpans := []string{}
+				expectedSpans := []string{"GetBootstrapInfo", "onMessage"}
+				require.EventuallyWithT(t, func(collect *assert.CollectT) {
+					require.GreaterOrEqual(collect, len(mockBackend.ReceivedTraces), len(expectedSpans))
+				}, 10*time.Second, 250*time.Millisecond)
+
+				for i := 0; i < len(mockBackend.ReceivedTraces); i++ {
+					gotSpans = append(gotSpans, mockBackend.ReceivedTraces[i].ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).Name())
+				}
+
+				for _, expectedSpan := range expectedSpans {
+					require.Contains(t, gotSpans, expectedSpan)
+				}
+			})
 		})
 	}
 }
@@ -2461,7 +2621,10 @@ func TestSupervisorValidatesConfigBeforeApplying(t *testing.T) {
 					},
 				})
 
-			extraConfigData := map[string]string{"url": server.addr}
+			extraConfigData := map[string]string{
+				"url":             server.addr,
+				"validate_config": "true",
+			}
 			if mode.UseHUPConfigReload {
 				extraConfigData["use_hup_config_reload"] = "true"
 			}
@@ -2470,6 +2633,7 @@ func TestSupervisorValidatesConfigBeforeApplying(t *testing.T) {
 			if mode.UseHUPConfigReload {
 				require.True(t, supervisorCfg.Agent.UseHUPConfigReload)
 			}
+			require.True(t, supervisorCfg.Agent.ValidateConfig, "ValidateConfig should be enabled for this test")
 
 			require.Nil(t, s.Start(t.Context()))
 			defer s.Shutdown()
