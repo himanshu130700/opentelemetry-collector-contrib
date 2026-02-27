@@ -681,14 +681,13 @@ func TestSetupResourceBuilder(t *testing.T) {
 				"SELECT 1",
 				sqlquery.TelemetryConfig{},
 				func() (*sql.DB, error) { return nil, nil },
-				func(db sqlquery.Db, sql string, logger *zap.Logger, telemetry sqlquery.TelemetryConfig) sqlquery.DbClient {
+				func(_ sqlquery.Db, _ string, _ *zap.Logger, _ sqlquery.TelemetryConfig) sqlquery.DbClient {
 					return nil
 				},
 				settings,
 				tt.config,
 				nil,
 			)
-
 			scraper.mb = metadata.NewMetricsBuilder(tt.config.MetricsBuilderConfig, settings)
 
 			row := sqlquery.StringMap{
