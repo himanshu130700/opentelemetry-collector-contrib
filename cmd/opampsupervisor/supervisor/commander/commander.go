@@ -116,8 +116,7 @@ func (c *Commander) ReloadConfigFile() error {
 func (c *Commander) ValidateConfig(ctx context.Context, configPath string) error {
 	c.logger.Debug("Validating agent config", zap.String("config", configPath))
 
-	args := []string{"validate", "--config", configPath}
-	args = append(args, c.cfg.Arguments...)
+	args := slices.Concat([]string{"validate", "--config", configPath}, c.args, c.cfg.Arguments)
 
 	cmd := exec.CommandContext(ctx, c.cfg.Executable, args...) // #nosec G204
 	cmd.Env = envVarMapToEnvMapSlice(c.cfg.Env)
